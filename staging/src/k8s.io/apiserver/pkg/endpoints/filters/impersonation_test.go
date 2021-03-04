@@ -83,6 +83,10 @@ func (impersonateAuthorizer) Authorize(ctx context.Context, a authorizer.Attribu
 		return authorizer.DecisionAllow, "", nil
 	}
 
+	if len(user.GetGroups()) > 1 && user.GetGroups()[1] == "uid-impersonater" && a.GetVerb() == "impersonate" && a.GetResource() == "uids" {
+		return authorizer.DecisionAllow, "", nil
+	}
+
 	return authorizer.DecisionNoOpinion, "deny by default", nil
 }
 
@@ -93,6 +97,7 @@ func TestImpersonationFilter(t *testing.T) {
 		impersonationUser       string
 		impersonationGroups     []string
 		impersonationUserExtras map[string][]string
+		impersonationUid        string
 		expectedUser            user.Info
 		expectedCode            int
 	}{
@@ -134,6 +139,17 @@ func TestImpersonationFilter(t *testing.T) {
 				Name: "tester",
 			},
 			impersonationUserExtras: map[string][]string{"scopes": {"scope-a"}},
+			expectedUser: &user.DefaultInfo{
+				Name: "tester",
+			},
+			expectedCode: http.StatusInternalServerError,
+		},
+		{
+			name: "impersonating-uid-without-user",
+			user: &user.DefaultInfo{
+				Name: "tester",
+			},
+			impersonationUid: "some-uid",
 			expectedUser: &user.DefaultInfo{
 				Name: "tester",
 			},
@@ -383,6 +399,25 @@ func TestImpersonationFilter(t *testing.T) {
 			},
 			expectedCode: http.StatusOK,
 		},
+		{
+			name: "allowed-user-impersonation-with-uid",
+			user: &user.DefaultInfo{
+				Name:   "dev",
+				Groups: []string{
+					"regular-impersonater",
+					"uid-impersonater",
+					},
+			},
+			impersonationUser: "tester",
+			impersonationUid: "some-uid",
+			expectedUser: &user.DefaultInfo{
+				Name:   "tester",
+				Groups: []string{"system:authenticated"},
+				Extra:  map[string][]string{},
+				UID: "some-uid",
+			},
+			expectedCode: http.StatusOK,
+		},
 	}
 
 	var ctx context.Context
@@ -409,6 +444,9 @@ func TestImpersonationFilter(t *testing.T) {
 			if strings.HasPrefix(key, authenticationapi.ImpersonateUserExtraHeaderPrefix) {
 				t.Fatalf("extra header still present: %v", key)
 			}
+		}
+		if _, ok := req.Header[authenticationapi.ImpersonateUIDHeader]; ok {
+			t.Fatal("uid header still present")
 		}
 
 	})
@@ -462,6 +500,9 @@ func TestImpersonationFilter(t *testing.T) {
 				for _, value := range values {
 					req.Header.Add(authenticationapi.ImpersonateUserExtraHeaderPrefix+extraKey, value)
 				}
+			}
+			if len(tc.impersonationUid) > 0 {
+				req.Header.Add(authenticationapi.ImpersonateUIDHeader, tc.impersonationUid)
 			}
 
 			resp, err := http.DefaultClient.Do(req)
